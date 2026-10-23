@@ -1,19 +1,110 @@
 package com.cibertec.egresosservice.services;
-import com.cibertec.egresosservice.entities.Egreso;import com.cibertec.egresosservice.entities.enums.EstadoEgreso;import com.cibertec.egresosservice.models.*;import com.cibertec.egresosservice.repositories.EgresoRepository;import org.apache.poi.ss.usermodel.*;import org.springframework.http.HttpStatus;import org.springframework.stereotype.Service;import org.springframework.transaction.annotation.Transactional;import org.springframework.web.server.ResponseStatusException;import java.io.*;import java.math.BigDecimal;import java.nio.charset.StandardCharsets;import java.time.*;import java.util.*;
-@Service public class EgresoService {
- private final EgresoRepository repo;private final UsuarioValidator usuarios;public EgresoService(EgresoRepository repo,UsuarioValidator usuarios){this.repo=repo;this.usuarios=usuarios;}
- public EgresoDTO registrar(EgresoDTO dto,Long usuarioId){usuarios.validar(usuarioId);return guardar(dto,usuarioId);}
- @Transactional protected EgresoDTO guardar(EgresoDTO dto,Long usuarioId){validarDatos(dto);Egreso e=new Egreso();e.setNumeroDocumento(dto.numeroDocumento());e.setProveedor(dto.proveedor());e.setFecha(dto.fecha());e.setImporte(dto.importe());e.setDocumentoAsociado(dto.documentoAsociado());e.setMotivo(dto.motivo());e.setComprobanteUrl(dto.comprobanteUrl());e.setUsuarioId(usuarioId);e.setEstado(EstadoEgreso.REGISTRADO);return convertir(repo.save(e));}
- private void validarDatos(EgresoDTO dto){if(dto.numeroDocumento()==null||dto.numeroDocumento().isBlank()||dto.proveedor()==null||dto.proveedor().isBlank()||dto.fecha()==null||dto.importe()==null||dto.importe().signum()<=0)throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"numeroDocumento, proveedor, fecha e importe positivo son obligatorios");}
- @Transactional(readOnly=true) public List<EgresoDTO> listarPorMes(LocalDate fecha){YearMonth mes=YearMonth.from(fecha);return repo.findByFechaBetween(mes.atDay(1),mes.atEndOfMonth()).stream().map(this::convertir).toList();}
- @Transactional(readOnly=true) public EgresoDTO buscarPorId(Long id){return convertir(obtener(id));}
- @Transactional public EgresoDTO anular(Long id){Egreso e=obtener(id);if(e.getEstado()==EstadoEgreso.ANULADO)throw new ResponseStatusException(HttpStatus.CONFLICT,"El egreso ya se encuentra anulado");e.setEstado(EstadoEgreso.ANULADO);return convertir(repo.save(e));}
- @Transactional public EgresoDTO procesar(Long id){Egreso e=obtener(id);if(e.getEstado()!=EstadoEgreso.REGISTRADO)throw new ResponseStatusException(HttpStatus.CONFLICT,"Solo se puede procesar un egreso registrado");e.setEstado(EstadoEgreso.PROCESADO);return convertir(repo.save(e));}
- public EgresoCargaMasivaResultado registrarMasivo(InputStream contenido,String nombreArchivo,Long usuarioId){usuarios.validar(usuarioId);String nombre=nombreArchivo==null?"":nombreArchivo.toLowerCase(Locale.ROOT);List<String[]> filas;if(nombre.endsWith(".xlsx")||nombre.endsWith(".xls"))filas=leerExcel(contenido);else if(nombre.endsWith(".csv"))filas=leerCsv(contenido);else throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"Formato no soportado; use .xlsx, .xls o .csv");if(!filas.isEmpty())filas.remove(0);int registrados=0;List<String> errores=new ArrayList<>();for(int i=0;i<filas.size();i++){try{guardar(mapear(filas.get(i)),usuarioId);registrados++;}catch(Exception ex){errores.add("Fila "+(i+2)+": "+ex.getMessage());}}return new EgresoCargaMasivaResultado(filas.size(),registrados,errores);}
- private EgresoDTO mapear(String[] fila){if(fila.length<4)throw new IllegalArgumentException("Se requieren numeroDocumento, proveedor, fecha e importe");String documento=celda(fila,0).trim();String proveedor=celda(fila,1).trim();LocalDate fecha=LocalDate.parse(celda(fila,2).trim());BigDecimal importe=new BigDecimal(celda(fila,3).trim().replace(",","."));String docAsociado=celda(fila,4).trim();String motivo=celda(fila,5).trim();return new EgresoDTO(null,documento,proveedor,fecha,importe,docAsociado.isBlank()?null:docAsociado,motivo.isBlank()?null:motivo,null,null,null);}
- private String celda(String[] fila,int pos){return pos<fila.length&&fila[pos]!=null?fila[pos]:"";}
- private List<String[]> leerCsv(InputStream stream){List<String[]> result=new ArrayList<>();try(BufferedReader reader=new BufferedReader(new InputStreamReader(stream,StandardCharsets.UTF_8))){String linea;while((linea=reader.readLine())!=null)if(!linea.isBlank())result.add(linea.split(",",-1));}catch(IOException e){throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"Error al leer CSV",e);}return result;}
- private List<String[]> leerExcel(InputStream stream){List<String[]> result=new ArrayList<>();try(Workbook workbook=WorkbookFactory.create(stream)){if(workbook.getNumberOfSheets()==0)return result;Sheet sheet=workbook.getSheetAt(0);DataFormatter formatter=new DataFormatter();for(Row row:sheet){int count=Math.max(6,row.getLastCellNum());String[] values=new String[count];for(int i=0;i<count;i++)values[i]=formatter.formatCellValue(row.getCell(i));result.add(values);}}catch(Exception e){throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"Error al leer Excel",e);}return result;}
- private Egreso obtener(Long id){return repo.findById(id).orElseThrow(()->new ResponseStatusException(HttpStatus.NOT_FOUND,"Egreso no encontrado: "+id));}
- private EgresoDTO convertir(Egreso e){return new EgresoDTO(e.getId(),e.getNumeroDocumento(),e.getProveedor(),e.getFecha(),e.getImporte(),e.getDocumentoAsociado(),e.getMotivo(),e.getEstado(),e.getUsuarioId(),e.getComprobanteUrl());}
+import com.cibertec.egresosservice.entities.Egreso;
+import com.cibertec.egresosservice.entities.enums.EstadoEgreso;
+import com.cibertec.egresosservice.models.*;
+import com.cibertec.egresosservice.repositories.EgresoRepository;
+import org.apache.poi.ss.usermodel.*;
+import org.springframework.http.HttpStatus;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.server.ResponseStatusException;
+import java.io.*;
+import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
+import java.time.*;
+import java.util.*;
+
+@Service
+public class EgresoService {
+    private final EgresoRepository repo;
+    private final UsuarioValidator usuarios;
+    public EgresoService(EgresoRepository repo,UsuarioValidator usuarios){this.repo=repo;this.usuarios=usuarios;}
+
+    public EgresoDTO registrar(EgresoDTO dto,Long usuarioId){
+        usuarios.validar(usuarioId);
+        return guardar(dto,usuarioId);
+    }
+    @Transactional
+    protected EgresoDTO guardar(EgresoDTO dto,Long usuarioId){
+        validarDatos(dto);
+        Egreso e=new Egreso();
+        e.setNumeroDocumento(dto.numeroDocumento()); e.setProveedor(dto.proveedor());
+        e.setFecha(dto.fecha()); e.setImporte(dto.importe());
+        e.setDocumentoAsociado(dto.documentoAsociado()); e.setMotivo(dto.motivo());
+        e.setComprobanteUrl(dto.comprobanteUrl()); e.setUsuarioId(usuarioId);
+        e.setEstado(EstadoEgreso.REGISTRADO);
+        return convertir(repo.save(e));
+    }
+    private void validarDatos(EgresoDTO dto){
+        if(dto.numeroDocumento()==null || dto.numeroDocumento().isBlank() || dto.proveedor()==null || dto.proveedor().isBlank() || dto.fecha()==null || dto.importe()==null || dto.importe().signum()<=0)
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"numeroDocumento, proveedor, fecha e importe positivo son obligatorios");
+    }
+    @Transactional(readOnly=true)
+    public List<EgresoDTO> listarPorMes(LocalDate fecha){
+        YearMonth mes=YearMonth.from(fecha);
+        return repo.findByFechaBetween(mes.atDay(1),mes.atEndOfMonth()).stream().map(this::convertir).toList();
+    }
+    @Transactional(readOnly=true)
+    public EgresoDTO buscarPorId(Long id){return convertir(obtener(id));}
+    @Transactional
+    public EgresoDTO anular(Long id){
+        Egreso e=obtener(id);
+        if(e.getEstado()==EstadoEgreso.ANULADO) throw new ResponseStatusException(HttpStatus.CONFLICT,"El egreso ya se encuentra anulado");
+        e.setEstado(EstadoEgreso.ANULADO); return convertir(repo.save(e));
+    }
+    @Transactional
+    public EgresoDTO procesar(Long id){
+        Egreso e=obtener(id);
+        if(e.getEstado()!=EstadoEgreso.REGISTRADO) throw new ResponseStatusException(HttpStatus.CONFLICT,"Solo se puede procesar un egreso registrado");
+        e.setEstado(EstadoEgreso.PROCESADO); return convertir(repo.save(e));
+    }
+    public EgresoCargaMasivaResultado registrarMasivo(InputStream contenido,String nombreArchivo,Long usuarioId){
+        usuarios.validar(usuarioId);
+        String nombre=nombreArchivo==null?"":nombreArchivo.toLowerCase(Locale.ROOT);
+        List<String[]> filas;
+        if(nombre.endsWith(".xlsx") || nombre.endsWith(".xls")) filas=leerExcel(contenido);
+        else if(nombre.endsWith(".csv")) filas=leerCsv(contenido);
+        else throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"Formato no soportado; use .xlsx, .xls o .csv");
+        if(!filas.isEmpty()) filas.remove(0);
+        int registrados=0;
+        List<String> errores=new ArrayList<>();
+        for(int i=0;i<filas.size();i++){
+            try { guardar(mapear(filas.get(i)),usuarioId); registrados++; }
+            catch(Exception ex){errores.add("Fila "+(i+2)+": "+ex.getMessage());}
+        }
+        return new EgresoCargaMasivaResultado(filas.size(),registrados,errores);
+    }
+    private EgresoDTO mapear(String[] fila){
+        if(fila.length<4) throw new IllegalArgumentException("Se requieren numeroDocumento, proveedor, fecha e importe");
+        String documento=celda(fila,0).trim(); String proveedor=celda(fila,1).trim();
+        LocalDate fecha=LocalDate.parse(celda(fila,2).trim());
+        BigDecimal importe=new BigDecimal(celda(fila,3).trim().replace(",","."));
+        String docAsociado=celda(fila,4).trim(); String motivo=celda(fila,5).trim();
+        return new EgresoDTO(null,documento,proveedor,fecha,importe,docAsociado.isBlank()?null:docAsociado,motivo.isBlank()?null:motivo,null,null,null);
+    }
+    private String celda(String[] fila,int pos){return pos<fila.length && fila[pos]!=null?fila[pos]:"";}
+    private List<String[]> leerCsv(InputStream stream){
+        List<String[]> result=new ArrayList<>();
+        try(BufferedReader reader=new BufferedReader(new InputStreamReader(stream,StandardCharsets.UTF_8))){
+            String linea; while((linea=reader.readLine())!=null) if(!linea.isBlank()) result.add(linea.split(",",-1));
+        }catch(IOException e){throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"Error al leer CSV",e);}
+        return result;
+    }
+    private List<String[]> leerExcel(InputStream stream){
+        List<String[]> result=new ArrayList<>();
+        try(Workbook workbook=WorkbookFactory.create(stream)){
+            if(workbook.getNumberOfSheets()==0) return result;
+            Sheet sheet=workbook.getSheetAt(0);
+            DataFormatter formatter=new DataFormatter();
+            for(Row row:sheet){
+                int count=Math.max(6,row.getLastCellNum());
+                String[] values=new String[count];
+                for(int i=0;i<count;i++) values[i]=formatter.formatCellValue(row.getCell(i));
+                result.add(values);
+            }
+        }catch(Exception e){throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"Error al leer Excel",e);}
+        return result;
+    }
+    private Egreso obtener(Long id){return repo.findById(id).orElseThrow(()->new ResponseStatusException(HttpStatus.NOT_FOUND,"Egreso no encontrado: "+id));}
+    private EgresoDTO convertir(Egreso e){return new EgresoDTO(e.getId(),e.getNumeroDocumento(),e.getProveedor(),e.getFecha(),e.getImporte(),e.getDocumentoAsociado(),e.getMotivo(),e.getEstado(),e.getUsuarioId(),e.getComprobanteUrl());}
 }
